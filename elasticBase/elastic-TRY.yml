@@ -1,0 +1,214 @@
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata: 
+  name: elasticclusterexample
+  namespace: elastictest
+spec:
+  version: 7.15.2
+  nodeSets:
+  - name: master-nodes
+    count: 1
+    podTemplate:
+      spec:
+        containers:
+        - name: elasticsearch
+          env:
+          - name: ES_JAVA_OPTS
+            value: "-Xms4g -Xmx4g"
+          resources:
+            requests:
+              memory: 8Gi
+              cpu: 2
+            limits:
+              cpu: 4
+              memory: 8Gi
+    config:
+      node.master: true
+      node.data: false
+      xpack.ml.enabled: true
+      node.ingest: true
+      node.ml: true
+      node.remote_cluster_client: false
+  - name: data-nodes
+    count: 2
+    podTemplate:
+      spec:
+        containers:
+        - name: elasticsearch
+          env:
+          - name: ES_JAVA_OPTS
+            value: "-Xms4g -Xmx4g"
+          resources:
+            requests:
+              memory: 8Gi
+              cpu: 2
+            limits:
+              cpu: 3
+              memory: 8Gi
+    config:
+      node.master: false
+      node.data: true
+      node.ml: true
+      node.ingest: true
+      node.transform: true
+      node.remote_cluster_client: false
+  # resources:
+  #   requests:
+  #     memory: 4Gi
+  #     cpu: 8
+  #   limits:
+  #     memory: 8Gi
+  #     cpu: 10
+    volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data # Do not change this name unless you set up a volume mount for the data path.
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 5Gi #use 200 for kubeprod
+        storageClassName: basic-csi
+---
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: mykibana
+  namespace: elastictest
+spec:
+  version: 7.15.2 #as dockcomp
+  count: 1
+  elasticsearchRef:
+    name: elasticclusterexample
+   
+  podTemplate:
+    spec:
+      containers:
+      - name: kibana
+        resources:
+          limits:
+            memory: 1Gi
+            cpu: 1
+        readinessProbe:
+          httpGet:
+            scheme: HTTPS
+            path: "/login"
+            port: 5601
+  http:
+    service:
+      spec:
+        type: ClusterIP
+  #       ports:
+  #       - name: https
+  #         protocol: TCP
+  #         port: 443
+  #         targetPort: 5601
+    tls:
+      selfSignedCertificate:
+        disabled: true       
+  # # this shows how to customize the Kibana pod
+  # # with labels and resource limits
+ 
+---
+# Source: eck-operator/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elastic-operator-test
+  namespace: elastictest
+  labels:
+    control-plane: elastic-operator
+    app.kubernetes.io/version: "1.8.0"
+data:
+  eck.yaml: |-
+    ca-cert-rotate-before: 24h
+    ca-cert-validity: 8760h
+    cert-rotate-before: 24h
+    cert-validity: 8760h
+    config: ""
+    container-registry: docker.elastic.co
+    disable-config-watch: false
+    disable-telemetry: false
+    elasticsearch-client-timeout: 180s
+    enable-leader-election: true
+    enable-tracing: false
+    enable-webhook: false
+    enforce-rbac-on-refs: true
+    ip-family: ""
+    kube-client-timeout: 60s
+    log-verbosity: 0
+    manage-webhook-certs: true
+    max-concurrent-reconciles: 3
+    metrics-port: 0
+    namespaces: "elastictest"
+    operator-namespace: "elastic-system"
+    ubi-only: false
+    validate-storage-class: true
+    webhook-cert-dir: "{TempDir}/k8s-webhook-server/serving-certs"
+    webhook-name: "elastic-webhook.k8s.elastic.co"
+    webhook-secret: ""
+---
+apiVersion: apm.k8s.elastic.co/v1
+kind: ApmServer
+metadata:
+  name: apm-server-elasticclusterexample
+  namespace: elastictest
+spec:
+  version: 7.15.2
+  count: 1
+  elasticsearchRef:
+    name: elasticclusterexample
+  kibanaRef:
+    name: mykibana
+---
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: ingress-controller
+  namespace: elastictest
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+    nginx.ingress.kubernetes.io/secure-backends: "true"
+    ingress.kubernetes.io/ssl-passthrough: "true"
+spec:
+  rules:
+  - host: kubeelasticcontrols.cells.es
+    http:
+      paths:
+      - path: /elastic
+        backend:
+          serviceName: elasticclusterexample-es-http
+          servicePort: 9200
+  tls:
+    - hosts:
+      - kubeelasticcontrols.cells.es
+      secretName: kubeelasticcontrols.cells.es-tls
+---
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: ingress-controller-kibana
+  namespace: elastictest
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: kubeelasticcontrols.cells.es
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: mykibana-kb-http
+          servicePort: 5601
+  - host: kubeelasticcontrols.cells.es
+    http:
+      paths:
+      - path: /apm
+        backend:
+          serviceName: apm-server-elasticclusterexample-apm-http
+          servicePort: 9200
+  tls: 
+    - hosts:
+      - kubeelasticcontrols.cells.es
+      secretName: kubeelasticcontrols.cells.es-tls

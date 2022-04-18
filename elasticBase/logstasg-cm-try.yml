@@ -1,0 +1,144 @@
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logstash-configmap
+  namespace: elastictest
+data:
+  logstash.yml: |
+    https.host: "0.0.0.0"
+    path.config: /usr/share/logstash/pipeline
+  logstash.conf: |
+    # all input will come from filebeat, no local logs
+    input {
+      beats {
+        port => 5044
+        ssl => false
+        client_inactivity_timeout => 180
+      }
+    }
+    filter {
+    }
+    output {
+      elasticsearch {
+        index => "logstash-%{[@metadata][beat]}"
+        hosts => [ "${ES_HOSTS}" ]
+        user => "${ES_USER}"
+        password => "${ES_PASSWORD}"
+        cacert => '/etc/logstash/certificates/ca.crt'
+      }
+    }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: logstash
+  name: logstash
+  namespace: elastictest
+spec:
+  containers:
+  - image: docker.elastic.co/logstash/logstash:7.15.2
+    name: logstash
+    ports:
+    # - containerPort: 30830
+    # - containerPort: 31477
+    - containerPort: 25826
+    - containerPort: 5044
+    env:
+    - name: ES_HOSTS
+      value: "https://elasticclusterexample-es-http:9200"
+    - name: ES_USER
+      value: "elastic"
+    - name: ES_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: elasticclusterexample-es-elastic-user
+          key: elastic
+    resources: {}
+    volumeMounts:
+    - name: config-volume
+      mountPath: /usr/share/logstash/config
+    - name: logstash-pipeline-volume
+      mountPath: /usr/share/logstash/pipeline
+    - name: cert-ca
+      mountPath: "/etc/logstash/certificates"
+      readOnly: true
+  restartPolicy: OnFailure
+  volumes:
+  - name: config-volume
+    configMap:
+      name: logstash-configmap
+      items:
+        - key: logstash.yml
+          path: logstash.yml
+  - name: logstash-pipeline-volume
+    configMap:
+      name: logstash-configmap
+      items:
+        - key: logstash.conf
+          path: logstash.conf
+  - name: cert-ca
+    secret:
+      secretName: elasticclusterexample-es-http-certs-public
+
+status: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: logstash
+  name: logstash
+spec:
+  ports:
+  - name: "25826"
+    port: 25826
+    targetPort: 25826
+  - name: "5044"
+    port: 5044
+    targetPort: 5044
+  selector:
+    app: logstash
+status:
+  loadBalancer: {}
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   labels:
+#     app: logstash
+#   name: logstash
+#   namespace: elastictest
+# spec:
+#   ports:
+#   - name: "30830"
+#     port: 30830
+#     targetPort: 30830
+#   - name: "31477"
+#     port: 31477
+#     targetPort: 31477
+#   selector:
+#     app: logstash
+# status:
+#   loadBalancer: {}
+---
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: kibana-ingress
+  namespace: elastictest
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: kubeelasticmis.cells.es
+    http:
+      paths:
+      - path: /logstash
+        backend:
+          serviceName: logstash
+          servicePort: 5044
+  tls:
+    - hosts:
+      - kubeelasticcontrols.cells.es
+      secretName: kubeelasticcontrols.cells.es-tls
